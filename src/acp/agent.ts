@@ -43,6 +43,7 @@ import {
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
+import { formatLlamaModels, LlamaClient, LLAMA_PROVIDER_ID, resolveLlamaServer, type LlamaModelInfo } from './llama.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { isAbsolute } from 'node:path'
@@ -99,8 +100,17 @@ function builtinAvailableCommands(): AvailableCommand[] {
     {
       name: 'changelog',
       description: 'Show pi changelog'
+    },
+    {
+      name: 'llama',
+      description: 'List llama.cpp router models, or load one and set it as the current model',
+      input: { hint: '(no args to list) <model>' }
     }
   ]
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
 }
 
 function mergeCommands(a: AvailableCommand[], b: AvailableCommand[]): AvailableCommand[] {
@@ -880,6 +890,11 @@ export class PiAcpAgent implements ACPAgent {
 
         return { stopReason: 'end_turn' }
       }
+
+      if (cmd === 'llama') {
+        const modelArg = args.join(' ').trim() || null
+        return await this.handleLlamaCommand(session, modelArg)
+      }
     }
 
     const result = await session.prompt(message, images)
@@ -890,6 +905,104 @@ export class PiAcpAgent implements ACPAgent {
       result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
 
     return { stopReason }
+  }
+
+  private async handleLlamaCommand(session: PiAcpSession, modelArg: string | null): Promise<PromptResponse> {
+    const say = (text: string) =>
+      this.conn.sessionUpdate({
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text }
+        }
+      })
+
+    let client: LlamaClient
+    try {
+      const server = resolveLlamaServer()
+      client = new LlamaClient(server.serverUrl, server.apiKey)
+    } catch (e: unknown) {
+      await say(`Invalid llama.cpp server URL: ${errorMessage(e)}`)
+      return { stopReason: 'end_turn' }
+    }
+
+    if (!modelArg) {
+      let models: LlamaModelInfo[]
+      try {
+        models = await client.list()
+      } catch (e: unknown) {
+        await say(
+          `Could not list llama.cpp models: ${errorMessage(e)}\n` +
+            'Configure the server in pi (/login llama.cpp) or set LLAMA_BASE_URL.'
+        )
+        return { stopReason: 'end_turn' }
+      }
+
+      const state = ((await session.proc.getState().catch(() => null)) ?? null) as {
+        model?: { provider?: string; id?: string }
+      } | null
+      const currentModelId = state?.model?.provider === LLAMA_PROVIDER_ID ? state.model.id : undefined
+
+      await say(formatLlamaModels(client.serverUrl, models, currentModelId))
+      return { stopReason: 'end_turn' }
+    }
+
+    // Load the model (skip when it is already loaded; sleeping counts as loaded).
+    let catalog: LlamaModelInfo[] | null = null
+    try {
+      catalog = await client.list()
+    } catch {
+      catalog = null
+    }
+    const existing = catalog?.find(m => m.id === modelArg || (m.aliases ?? []).includes(modelArg))
+    const alreadyLoaded =
+      existing !== undefined && (existing.status.value === 'loaded' || existing.status.value === 'sleeping')
+
+    if (!alreadyLoaded) {
+      await say(`Loading ${modelArg} from llama.cpp…`)
+      let lastEmit = 0
+      let lastPct: number | null = null
+
+      try {
+        await client.loadAndWait(
+          modelArg,
+          progress => {
+            const pct = progress.ratio === null ? null : Math.floor(progress.ratio * 100)
+            const now = Date.now()
+            const pctChanged = pct !== null && pct !== lastPct
+            if (!pctChanged && now - lastEmit < 10_000) return
+            if (lastEmit !== 0 && now - lastEmit < 2_000) return
+            lastEmit = now
+            if (pct !== null) lastPct = pct
+            const pctText = pct !== null ? ` ${pct}%` : ''
+            const detailText = progress.detail ? ` · ${progress.detail}` : ''
+            void say(`Loading ${modelArg}:${pctText}${detailText}\n`)
+          },
+          250
+        )
+      } catch (e: unknown) {
+        await say(`Failed to load ${modelArg}: ${errorMessage(e)}`)
+        return { stopReason: 'end_turn' }
+      }
+    }
+
+    // Best-effort: make it pi's current model so the session uses it right away.
+    const targetId = existing?.id ?? modelArg
+    try {
+      await session.proc.setModel(LLAMA_PROVIDER_ID, targetId)
+      await say(
+        alreadyLoaded
+          ? `${modelArg} is already loaded; set it as the current model.`
+          : `Loaded ${modelArg} and set it as the current model.`
+      )
+      await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc).catch(() => {})
+    } catch {
+      await say(
+        `Loaded ${modelArg} in llama.cpp, but it was loaded after this pi session started, so pi does not list it yet — start a new session to select it.`
+      )
+    }
+
+    return { stopReason: 'end_turn' }
   }
 
   async cancel(params: CancelNotification): Promise<void> {

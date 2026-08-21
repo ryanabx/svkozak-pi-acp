@@ -372,8 +372,12 @@ export class PiAcpAgent implements ACPAgent {
       )
     }
 
+    // With no loaded models the llama catalog is the source of truth; do not advertise a
+    // previously selected model that is no longer available.
+    const effectiveState = llamaCatalog && state ? { ...state, model: null } : state
+
     const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
-      state,
+      state: effectiveState,
       availableModels
     })
 

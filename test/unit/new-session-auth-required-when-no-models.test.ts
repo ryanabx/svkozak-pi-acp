@@ -95,6 +95,10 @@ test('PiAcpAgent: newSession proceeds with zero models when a llama router is re
       assert.equal(sessions.closeCalls.length, 0)
       assert.ok(res.sessionId)
 
+      // No previously selected model should leak into the model state.
+      assert.equal((res as any).models, null)
+      assert.ok(!((res as any).configOptions ?? []).some((o: any) => o?.id === 'model'))
+
       const startupInfo = String((res as any)._meta?.piAcp?.startupInfo ?? '')
       assert.match(startupInfo, /## llama\.cpp models/)
       assert.match(startupInfo, /Fast · unloaded/)

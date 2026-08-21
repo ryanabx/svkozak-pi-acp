@@ -255,14 +255,16 @@ export async function getLlamaCatalog(timeoutMs = 5_000): Promise<LlamaCatalog |
   }
 }
 
+export function llamaOptionTitle(model: LlamaModelInfo): string {
+  const parts = [model.id, model.status.value]
+  const ctx = formatLlamaModelContext(model)
+  if (ctx) parts.push(ctx)
+  return parts.join(' · ')
+}
+
 export function llamaStartupSection(catalog: LlamaCatalog): string[] {
   const lines: string[] = [`## llama.cpp models (${catalog.serverUrl})`]
-  for (const model of catalog.models) {
-    const parts = [model.id, model.status.value]
-    const ctx = formatLlamaModelContext(model)
-    if (ctx) parts.push(ctx)
-    lines.push(`- ${parts.join(' · ')}`)
-  }
+  for (const model of catalog.models) lines.push(`- ${llamaOptionTitle(model)}`)
   lines.push('- Load a model with: /llama <model>')
   lines.push('')
   return lines
@@ -281,10 +283,7 @@ export function formatLlamaModels(serverUrl: string, models: LlamaModelInfo[], c
   const lines: string[] = ['llama.cpp models', serverUrl, '']
   for (const model of models) {
     const marker = current && model.id === current ? '→' : ' '
-    const parts = [model.id, model.status.value]
-    const ctx = formatLlamaModelContext(model)
-    if (ctx) parts.push(ctx)
-    lines.push(`${marker} ${parts.join(' · ')}`)
+    lines.push(`${marker} ${llamaOptionTitle(model)}`)
   }
   lines.push('', 'Load a model with: /llama <model>')
 

@@ -108,6 +108,116 @@ test('PiAcpAgent: /llama <model> loads and sets the current model', async () => 
   )
 })
 
+test('PiAcpAgent: /llama uses form elicitation to pick the model when supported', async () => {
+  let listCount = 0
+  let setModel: string | null = null
+
+  await withFetch(
+    (url, init) => {
+      if (init?.method === 'POST') return {}
+      listCount += 1
+      // First two lists (selection + catalog check) still unloaded; load finishes after.
+      if (listCount <= 2) {
+        return { data: [{ id: 'Fast', status: { value: 'unloaded' } }] }
+      }
+      return { data: [{ id: 'Fast', status: { value: 'loaded' } }] }
+    },
+    async () => {
+      const conn = new FakeAgentSideConnection()
+      conn.nextElicitationResponse = { action: 'accept', content: { model: 'Fast' } }
+      const proc = new FakePiRpcProcess() as any
+      proc.setModel = async (provider: string, modelId: string) => {
+        setModel = `${provider}/${modelId}`
+      }
+
+      const agent = new PiAcpAgent(asAgentConn(conn))
+      await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { elicitation: { form: {} } }
+      } as any)
+      ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] })
+
+      const res = await agent.prompt({
+        sessionId: 's1',
+        prompt: [{ type: 'text', text: '/llama' }]
+      } as any)
+
+      assert.equal(res.stopReason, 'end_turn')
+      assert.equal(proc.prompts.length, 0)
+
+      const [request] = conn.elicitationRequests as Array<Record<string, any>>
+      assert.equal(request.mode, 'form')
+      assert.equal(request.sessionId, 's1')
+      assert.equal(request.requestedSchema.required[0], 'model')
+      const options = request.requestedSchema.properties.model.oneOf as Array<Record<string, any>>
+      assert.deepEqual(
+        options.map(o => o.const),
+        ['Fast']
+      )
+
+      assert.equal(setModel, 'llama.cpp/Fast')
+      assert.match(agentText(conn), /Loaded Fast and set it as the current model\./)
+    }
+  )
+})
+
+test('PiAcpAgent: /llama honours a cancelled elicitation', async () => {
+  let setModel = 0
+
+  await withFetch(
+    () => ({ data: [{ id: 'Fast', status: { value: 'unloaded' } }] }),
+    async () => {
+      const conn = new FakeAgentSideConnection()
+      conn.nextElicitationResponse = { action: 'cancel' }
+      const proc = new FakePiRpcProcess() as any
+      proc.setModel = async () => {
+        setModel += 1
+      }
+
+      const agent = new PiAcpAgent(asAgentConn(conn))
+      await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { elicitation: { form: {} } }
+      } as any)
+      ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] })
+
+      const res = await agent.prompt({
+        sessionId: 's1',
+        prompt: [{ type: 'text', text: '/llama' }]
+      } as any)
+
+      assert.equal(res.stopReason, 'end_turn')
+      assert.equal(setModel, 0)
+      assert.match(agentText(conn), /Model selection cancelled\./)
+    }
+  )
+})
+
+test('PiAcpAgent: /llama falls back to a text listing without elicitation support', async () => {
+  const catalog = { data: [{ id: 'Fast', status: { value: 'unloaded' } }] }
+
+  await withFetch(
+    () => catalog,
+    async () => {
+      const conn = new FakeAgentSideConnection()
+      const proc = new FakePiRpcProcess() as any
+
+      const agent = new PiAcpAgent(asAgentConn(conn))
+      await agent.initialize({ protocolVersion: 1 } as any)
+      ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] })
+
+      const res = await agent.prompt({
+        sessionId: 's1',
+        prompt: [{ type: 'text', text: '/llama' }]
+      } as any)
+
+      assert.equal(res.stopReason, 'end_turn')
+      assert.equal(conn.elicitationRequests.length, 0)
+      assert.match(agentText(conn), /llama\.cpp models/)
+    }
+  )
+})
+
 test('PiAcpAgent: /llama <model> already-loaded model skips loading', async () => {
   let posts = 0
   let setModel: string | null = null

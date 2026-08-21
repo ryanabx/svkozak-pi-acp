@@ -48,11 +48,13 @@ import {
   getLlamaCatalog,
   LlamaClient,
   LLAMA_PROVIDER_ID,
+  llamaOptionTitle,
   llamaStartupSection,
   resolveLlamaServer,
   type LlamaCatalog,
   type LlamaModelInfo
 } from './llama.js'
+import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { isAbsolute } from 'node:path'
@@ -142,6 +144,7 @@ const pkg = readNearestPackageJson(import.meta.url)
 export class PiAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
   private readonly sessions = new SessionManager()
+  private clientSupportsElicitationForm = false
   private readonly store = new SessionStore()
   private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
 
@@ -257,6 +260,9 @@ export class PiAcpAgent implements ACPAgent {
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1
     const requested = params.protocolVersion
+
+    // Per ACP, form support exists only when `elicitation.form` is present and non-null.
+    this.clientSupportsElicitationForm = params.clientCapabilities?.elicitation?.form != null
 
     return {
       protocolVersion: requested === supportedVersion ? requested : supportedVersion,
@@ -961,34 +967,46 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      const state = ((await session.proc.getState().catch(() => null)) ?? null) as {
-        model?: { provider?: string; id?: string }
-      } | null
-      const currentModelId = state?.model?.provider === LLAMA_PROVIDER_ID ? state.model.id : undefined
+      const choice = await this.chooseLlamaModel(session, models)
 
-      await say(formatLlamaModels(client.serverUrl, models, currentModelId))
-      return { stopReason: 'end_turn' }
+      if (choice !== null) {
+        if ('canceled' in choice) {
+          await say('Model selection cancelled.')
+          return { stopReason: 'end_turn' }
+        }
+        modelArg = choice.id
+      } else {
+        // No form elicitation (unsupported or failed): fall back to a text listing.
+        const state = ((await session.proc.getState().catch(() => null)) ?? null) as {
+          model?: { provider?: string; id?: string }
+        } | null
+        const currentModelId = state?.model?.provider === LLAMA_PROVIDER_ID ? state.model.id : undefined
+
+        await say(formatLlamaModels(client.serverUrl, models, currentModelId))
+        return { stopReason: 'end_turn' }
+      }
     }
 
     // Load the model (skip when it is already loaded; sleeping counts as loaded).
+    const name = modelArg
     let catalog: LlamaModelInfo[] | null = null
     try {
       catalog = await client.list()
     } catch {
       catalog = null
     }
-    const existing = catalog?.find(m => m.id === modelArg || (m.aliases ?? []).includes(modelArg))
+    const existing = catalog?.find(m => m.id === name || (m.aliases ?? []).includes(name))
     const alreadyLoaded =
       existing !== undefined && (existing.status.value === 'loaded' || existing.status.value === 'sleeping')
 
     if (!alreadyLoaded) {
-      await say(`Loading ${modelArg} from llama.cpp…`)
+      await say(`Loading ${name} from llama.cpp…`)
       let lastEmit = 0
       let lastPct: number | null = null
 
       try {
         await client.loadAndWait(
-          modelArg,
+          name,
           progress => {
             const pct = progress.ratio === null ? null : Math.floor(progress.ratio * 100)
             const now = Date.now()
@@ -999,33 +1017,76 @@ export class PiAcpAgent implements ACPAgent {
             if (pct !== null) lastPct = pct
             const pctText = pct !== null ? ` ${pct}%` : ''
             const detailText = progress.detail ? ` · ${progress.detail}` : ''
-            void say(`Loading ${modelArg}:${pctText}${detailText}\n`)
+            void say(`Loading ${name}:${pctText}${detailText}\n`)
           },
           250
         )
       } catch (e: unknown) {
-        await say(`Failed to load ${modelArg}: ${errorMessage(e)}`)
+        await say(`Failed to load ${name}: ${errorMessage(e)}`)
         return { stopReason: 'end_turn' }
       }
     }
 
     // Best-effort: make it pi's current model so the session uses it right away.
-    const targetId = existing?.id ?? modelArg
+    const targetId = existing?.id ?? name
     try {
       await session.proc.setModel(LLAMA_PROVIDER_ID, targetId)
       await say(
         alreadyLoaded
-          ? `${modelArg} is already loaded; set it as the current model.`
-          : `Loaded ${modelArg} and set it as the current model.`
+          ? `${name} is already loaded; set it as the current model.`
+          : `Loaded ${name} and set it as the current model.`
       )
       await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc).catch(() => {})
     } catch {
       await say(
-        `Loaded ${modelArg} in llama.cpp, but it was loaded after this pi session started, so pi does not list it yet — start a new session to select it.`
+        `Loaded ${name} in llama.cpp, but it was loaded after this pi session started, so pi does not list it yet — start a new session to select it.`
       )
     }
 
     return { stopReason: 'end_turn' }
+  }
+
+  /**
+   * Ask the client which llama.cpp model to load via ACP form elicitation.
+   * Returns null when form elicitation is unavailable (capability missing or the
+   * request failed), signalling the caller to fall back to a text listing.
+   */
+  private async chooseLlamaModel(
+    session: PiAcpSession,
+    models: LlamaModelInfo[]
+  ): Promise<{ id: string } | { canceled: true } | null> {
+    if (!this.clientSupportsElicitationForm || models.length === 0) return null
+
+    let response: CreateElicitationResponse
+    try {
+      response = await this.conn.unstable_createElicitation({
+        sessionId: session.sessionId,
+        mode: 'form',
+        message: 'Select a llama.cpp model to load',
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            model: {
+              type: 'string',
+              title: 'Model',
+              oneOf: models.map(model => ({ const: model.id, title: llamaOptionTitle(model) }))
+            }
+          },
+          required: ['model']
+        }
+      } satisfies CreateElicitationRequest)
+    } catch {
+      return null
+    }
+
+    if (response.action !== 'accept') return { canceled: true }
+
+    const chosen = response.content?.model
+    if (typeof chosen !== 'string' || !models.some(model => model.id === chosen)) {
+      return { canceled: true }
+    }
+
+    return { id: chosen }
   }
 
   async cancel(params: CancelNotification): Promise<void> {

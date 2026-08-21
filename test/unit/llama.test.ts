@@ -8,9 +8,12 @@ import {
   formatBytes,
   formatLlamaModelContext,
   formatLlamaModels,
+  getLlamaCatalog,
+  llamaStartupSection,
   normalizeLlamaServerUrl,
   parseLlamaLoadProgress,
   resolveLlamaServer,
+  type LlamaCatalog,
   type LlamaModelInfo
 } from '../../src/acp/llama.js'
 
@@ -204,6 +207,50 @@ test('formatLlamaModels: lists models with status, context and usage hint', () =
 test('formatLlamaModelContext: prefers n_ctx over n_ctx_train', () => {
   assert.equal(formatLlamaModelContext({ id: 'm', status: { value: 'unloaded' }, meta: { n_ctx: 8192 } }), '8k context')
   assert.equal(formatLlamaModelContext({ id: 'm', status: { value: 'unloaded' } }), null)
+})
+
+test('getLlamaCatalog: resolves catalog, null when unreachable or empty', async () => {
+  await withFetch(
+    () => ({ data: [{ id: 'a', status: { value: 'unloaded' } }] }),
+    async () => {
+      const catalog = await getLlamaCatalog(1000)
+      assert.ok(catalog)
+      assert.equal(catalog.models.length, 1)
+      assert.equal(catalog.models[0].id, 'a')
+    }
+  )
+
+  await withFetch(
+    () => {
+      throw new Error('fetch failed')
+    },
+    async () => {
+      assert.equal(await getLlamaCatalog(1000), null)
+    }
+  )
+
+  await withFetch(
+    () => ({ data: [] }),
+    async () => {
+      assert.equal(await getLlamaCatalog(1000), null)
+    }
+  )
+})
+
+const sectionCatalog: LlamaCatalog = {
+  serverUrl: 'http://10.18.0.1:8080',
+  models: [
+    { id: 'Fast', status: { value: 'unloaded' }, meta: { n_ctx: 268435456 } },
+    { id: 'Slow', status: { value: 'unloaded' } }
+  ]
+}
+
+test('llamaStartupSection: lists models with a /llama hint', () => {
+  const text = llamaStartupSection(sectionCatalog).join('\n')
+  assert.match(text, /## llama\.cpp models \(http:\/\/10\.18\.0\.1:8080\)/)
+  assert.match(text, /- Fast · unloaded · 268435k context/)
+  assert.match(text, /- Slow · unloaded/)
+  assert.match(text, /- Load a model with: \/llama <model>/)
 })
 
 test('formatBytes: human readable sizes', () => {

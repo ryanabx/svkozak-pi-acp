@@ -43,7 +43,16 @@ import {
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
 import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
-import { formatLlamaModels, LlamaClient, LLAMA_PROVIDER_ID, resolveLlamaServer, type LlamaModelInfo } from './llama.js'
+import {
+  formatLlamaModels,
+  getLlamaCatalog,
+  LlamaClient,
+  LLAMA_PROVIDER_ID,
+  llamaStartupSection,
+  resolveLlamaServer,
+  type LlamaCatalog,
+  type LlamaModelInfo
+} from './llama.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { isAbsolute } from 'node:path'
@@ -338,14 +347,21 @@ export class PiAcpAgent implements ACPAgent {
     }
 
     // If pi has no models available after spawning, it's effectively unauthenticated.
+    // Exception: a reachable llama.cpp router can serve models without any provider auth,
+    // so instead of demanding login we continue and offer its models in the startup info.
     const rawModelsCount = Array.isArray(availableModels?.models) ? availableModels.models.length : 0
 
+    let llamaCatalog: LlamaCatalog | null = null
     if (rawModelsCount === 0) {
-      this.cleanupFailedNewSession(session.sessionId, state)
-      throw RequestError.authRequired(
-        { authMethods: getAuthMethods() },
-        'Configure an API key or log in with an OAuth provider.'
-      )
+      llamaCatalog = await getLlamaCatalog()
+
+      if (!llamaCatalog) {
+        this.cleanupFailedNewSession(session.sessionId, state)
+        throw RequestError.authRequired(
+          { authMethods: getAuthMethods() },
+          'Configure an API key or log in with an OAuth provider.'
+        )
+      }
     }
 
     if (stateErr && maybeAuthRequiredError(stateErr)) {
@@ -367,13 +383,16 @@ export class PiAcpAgent implements ACPAgent {
     // If quietStartup is enabled, suppress the full "startup info" prelude, but still surface
     // the "New version available" notice (if any) since it's high-signal and actionable.
     const preludeText = quietStartup
-      ? updateNotice
-        ? updateNotice + '\n'
-        : ''
+      ? llamaCatalog
+        ? llamaStartupSection(llamaCatalog).join('\n') + (updateNotice ? `\n${updateNotice}\n` : '')
+        : updateNotice
+          ? updateNotice + '\n'
+          : ''
       : buildStartupInfo({
           cwd: params.cwd,
           fileCommands,
-          updateNotice
+          updateNotice,
+          llama: llamaCatalog
         })
 
     if (preludeText)
@@ -1602,6 +1621,7 @@ function buildStartupInfo(opts: {
   cwd: string
   fileCommands: ReturnType<typeof loadSlashCommands>
   updateNotice: string | null
+  llama?: LlamaCatalog | null
 }): string {
   void opts.fileCommands
 
@@ -1622,6 +1642,9 @@ function buildStartupInfo(opts: {
   } catch {
     // ignore
   }
+
+  // llama.cpp models: surfaced when pi has no models of its own yet.
+  if (opts.llama) md.push(...llamaStartupSection(opts.llama))
 
   const addSection = (title: string, items: string[]) => {
     const cleaned = items.map(s => s.trim()).filter(Boolean)

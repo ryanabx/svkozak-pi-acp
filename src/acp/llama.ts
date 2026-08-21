@@ -34,6 +34,11 @@ export interface LlamaLoadProgress {
   detail: string | null
 }
 
+export interface LlamaCatalog {
+  serverUrl: string
+  models: LlamaModelInfo[]
+}
+
 export function normalizeLlamaServerUrl(value: string): string {
   const url = new URL(value.trim())
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -129,10 +134,12 @@ function isModelInfo(value: unknown): value is LlamaModelInfo {
 export class LlamaClient {
   readonly serverUrl: string
   private readonly apiKey: string | undefined
+  private readonly timeoutMs: number
 
-  constructor(serverUrl: string, apiKey?: string) {
+  constructor(serverUrl: string, apiKey?: string, timeoutMs = 15_000) {
     this.serverUrl = normalizeLlamaServerUrl(serverUrl)
     this.apiKey = apiKey
+    this.timeoutMs = timeoutMs
   }
 
   async list(): Promise<LlamaModelInfo[]> {
@@ -193,7 +200,7 @@ export class LlamaClient {
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
     if (this.apiKey) headers.set('Authorization', `Bearer ${this.apiKey}`)
 
-    const timeout = AbortSignal.timeout(15_000)
+    const timeout = AbortSignal.timeout(this.timeoutMs)
     const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout
 
     let response: Response
@@ -229,6 +236,36 @@ export function parseLlamaLoadProgress(entry: LlamaModelInfo | undefined, modelI
   const ratio = total > 0 ? Math.min(1, done / total) : null
   const detail = total > 0 ? `${formatBytes(done)} / ${formatBytes(total)}` : null
   return { message: `Loading ${modelId}`, ratio, detail }
+}
+
+/**
+ * Best-effort probe of the llama.cpp router used to decide whether ACP can be
+ * used without provider auth. Returns null when the server is unreachable or
+ * has no models to offer.
+ */
+export async function getLlamaCatalog(timeoutMs = 5_000): Promise<LlamaCatalog | null> {
+  try {
+    const server = resolveLlamaServer()
+    const client = new LlamaClient(server.serverUrl, server.apiKey, timeoutMs)
+    const models = await client.list()
+    if (!models.length) return null
+    return { serverUrl: server.serverUrl, models }
+  } catch {
+    return null
+  }
+}
+
+export function llamaStartupSection(catalog: LlamaCatalog): string[] {
+  const lines: string[] = [`## llama.cpp models (${catalog.serverUrl})`]
+  for (const model of catalog.models) {
+    const parts = [model.id, model.status.value]
+    const ctx = formatLlamaModelContext(model)
+    if (ctx) parts.push(ctx)
+    lines.push(`- ${parts.join(' · ')}`)
+  }
+  lines.push('- Load a model with: /llama <model>')
+  lines.push('')
+  return lines
 }
 
 export function formatLlamaModelContext(model: LlamaModelInfo): string | null {

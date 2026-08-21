@@ -255,6 +255,66 @@ test('PiAcpAgent: /llama <model> already-loaded model skips loading', async () =
   )
 })
 
+test('PiAcpAgent: /llama <model> reports load progress via tool call updates', async () => {
+  let listCount = 0
+  const snapshots = [
+    { id: 'Fast', status: { value: 'unloaded' } },
+    { id: 'Fast', status: { value: 'loading', progress: { a: { done: 1, total: 2 } } } },
+    { id: 'Fast', status: { value: 'loading', progress: { a: { done: 1, total: 2 } } } },
+    { id: 'Fast', status: { value: 'loading', progress: { a: { done: 2, total: 4 } } } },
+    { id: 'Fast', status: { value: 'loaded' } }
+  ]
+
+  await withFetch(
+    (url, init) => {
+      if (init?.method === 'POST') return {}
+      const snapshot = snapshots[Math.min(listCount, snapshots.length - 1)]
+      listCount += 1
+      return { data: [snapshot] }
+    },
+    async () => {
+      const conn = new FakeAgentSideConnection()
+      const proc = new FakePiRpcProcess() as any
+      let setModel = 0
+      proc.setModel = async () => {
+        setModel += 1
+      }
+
+      const agent = new PiAcpAgent(asAgentConn(conn))
+      ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] })
+
+      const res = await agent.prompt({
+        sessionId: 's1',
+        prompt: [{ type: 'text', text: '/llama Fast' }]
+      } as any)
+
+      assert.equal(res.stopReason, 'end_turn')
+      assert.equal(setModel, 1)
+
+      const toolUpdates = conn.updates
+        .map(u => (u as any).update)
+        .filter(u => u?.sessionUpdate === 'tool_call' || u?.sessionUpdate === 'tool_call_update')
+
+      assert.equal(toolUpdates[0].sessionUpdate, 'tool_call')
+      assert.equal(toolUpdates[0].title, 'Loading Fast')
+      assert.equal(toolUpdates[0].status, 'in_progress')
+
+      // Repeated identical progress must not be re-emitted.
+      const progressTexts = toolUpdates
+        .slice(1)
+        .map(u => u.content?.[0]?.content?.text)
+        .filter(Boolean)
+
+      assert.deepEqual(progressTexts, ['Loading Fast: 50% · 1 B / 2 B', 'Loading Fast: 50% · 2 B / 4 B'])
+      assert.equal(toolUpdates.at(-1).status, 'completed')
+
+      // The chat itself gets exactly one "Loading" message.
+      const chatLoading = agentText(conn).match(/Loading Fast/g)
+      assert.equal(chatLoading?.length, 1)
+    }
+  )
+})
+
 test('PiAcpAgent: /llama <model> reports when pi cannot select the model yet', async () => {
   await withFetch(
     (url, init) => {

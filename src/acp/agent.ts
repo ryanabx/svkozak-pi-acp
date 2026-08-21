@@ -19,6 +19,7 @@ import {
   type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
+  type SessionUpdate,
   type StopReason,
   type DeleteSessionRequest,
   type DeleteSessionResponse
@@ -52,6 +53,7 @@ import {
   llamaStartupSection,
   resolveLlamaServer,
   type LlamaCatalog,
+  type LlamaLoadProgress,
   type LlamaModelInfo
 } from './llama.js'
 import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
@@ -1001,28 +1003,56 @@ export class PiAcpAgent implements ACPAgent {
       existing !== undefined && (existing.status.value === 'loaded' || existing.status.value === 'sleeping')
 
     if (!alreadyLoaded) {
+      const toolCallId = `llama-load-${name}`
+
+      // Surface the load as a tool call so clients that render tool calls get a
+      // spinner/progress UI for the whole duration.
+      this.emit(session.sessionId, {
+        sessionUpdate: 'tool_call',
+        toolCallId,
+        title: `Loading ${name}`,
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: { model: name }
+      })
+
       await say(`Loading ${name} from llama.cpp…`)
-      let lastEmit = 0
-      let lastPct: number | null = null
+      let lastProgressText: string | null = null
+
+      const emitProgress = (progress: LlamaLoadProgress) => {
+        const pct = progress.ratio === null ? null : Math.floor(progress.ratio * 100)
+        const parts = [pct !== null ? `${pct}%` : null, progress.detail].filter((part): part is string => part !== null)
+        if (!parts.length) return
+
+        const text = parts.join(' · ')
+        if (text === lastProgressText) return
+        lastProgressText = text
+
+        this.emit(session.sessionId, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          title: `Loading ${name}`,
+          status: 'in_progress',
+          content: [{ type: 'content', content: { type: 'text', text: `Loading ${name}: ${text}` } }]
+        })
+      }
 
       try {
-        await client.loadAndWait(
-          name,
-          progress => {
-            const pct = progress.ratio === null ? null : Math.floor(progress.ratio * 100)
-            const now = Date.now()
-            const pctChanged = pct !== null && pct !== lastPct
-            if (!pctChanged && now - lastEmit < 10_000) return
-            if (lastEmit !== 0 && now - lastEmit < 2_000) return
-            lastEmit = now
-            if (pct !== null) lastPct = pct
-            const pctText = pct !== null ? ` ${pct}%` : ''
-            const detailText = progress.detail ? ` · ${progress.detail}` : ''
-            void say(`Loading ${name}:${pctText}${detailText}\n`)
-          },
-          250
-        )
+        await client.loadAndWait(name, emitProgress, 250)
+
+        this.emit(session.sessionId, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          title: `Loading ${name}`,
+          status: 'completed'
+        })
       } catch (e: unknown) {
+        this.emit(session.sessionId, {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          title: `Loading ${name}`,
+          status: 'failed'
+        })
         await say(`Failed to load ${name}: ${errorMessage(e)}`)
         return { stopReason: 'end_turn' }
       }
@@ -1045,6 +1075,11 @@ export class PiAcpAgent implements ACPAgent {
     }
 
     return { stopReason: 'end_turn' }
+  }
+
+  /** Fire a session update notification (best-effort; notification errors are ignored). */
+  private emit(sessionId: string, update: SessionUpdate): void {
+    void this.conn.sessionUpdate({ sessionId, update }).catch(() => {})
   }
 
   /**

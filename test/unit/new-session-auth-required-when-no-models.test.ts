@@ -102,7 +102,7 @@ test('PiAcpAgent: newSession proceeds with zero models when a llama router is re
       const startupInfo = String((res as any)._meta?.piAcp?.startupInfo ?? '')
       assert.match(startupInfo, /## llama\.cpp models/)
       assert.match(startupInfo, /Fast · unloaded/)
-      assert.match(startupInfo, /Load a model with: \/llama <model>/)
+      assert.match(startupInfo, /- Use \/llama to select a model to load/)
     }
   )
 })

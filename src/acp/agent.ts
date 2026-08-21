@@ -114,8 +114,9 @@ function builtinAvailableCommands(): AvailableCommand[] {
     },
     {
       name: 'llama',
-      description: 'List llama.cpp router models, or load one and set it as the current model',
-      input: { hint: '(no args to list) <model>' }
+      description:
+        'Select a llama.cpp model to load (multi-choice), or load one directly and set it as the current model',
+      input: { hint: '(no args to choose) <model>' }
     }
   ]
 }

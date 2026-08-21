@@ -265,7 +265,7 @@ export function llamaOptionTitle(model: LlamaModelInfo): string {
 export function llamaStartupSection(catalog: LlamaCatalog): string[] {
   const lines: string[] = [`## llama.cpp models (${catalog.serverUrl})`]
   for (const model of catalog.models) lines.push(`- ${llamaOptionTitle(model)}`)
-  lines.push('- Load a model with: /llama <model>')
+  lines.push('- Use /llama to select a model to load')
   lines.push('')
   return lines
 }
@@ -285,7 +285,7 @@ export function formatLlamaModels(serverUrl: string, models: LlamaModelInfo[], c
     const marker = current && model.id === current ? '→' : ' '
     lines.push(`${marker} ${llamaOptionTitle(model)}`)
   }
-  lines.push('', 'Load a model with: /llama <model>')
+  lines.push('', 'Use /llama to select a model to load, or /llama <model> to load one directly.')
 
   return lines.join('\n')
 }

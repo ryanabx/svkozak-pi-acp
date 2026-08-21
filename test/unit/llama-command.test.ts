@@ -64,7 +64,7 @@ test('PiAcpAgent: /llama lists llama.cpp models adapter-side', async () => {
       assert.match(text, /llama\.cpp models/)
       assert.match(text, /→ Fast · loaded · 131k context/)
       assert.match(text, / Slow · unloaded/)
-      assert.match(text, /Load a model with: \/llama <model>/)
+      assert.match(text, /Use \/llama to select a model to load, or \/llama <model> to load one directly\./)
     }
   )
 })

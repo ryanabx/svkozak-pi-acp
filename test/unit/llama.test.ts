@@ -201,7 +201,7 @@ test('formatLlamaModels: lists models with status, context and usage hint', () =
   assert.match(text, /http:\/\/10\.18\.0\.1:8080/)
   assert.match(text, /→ Fast · loaded · 268435k context/)
   assert.match(text, / Slow · unloaded · 131k context/)
-  assert.match(text, /Load a model with: \/llama <model>/)
+  assert.match(text, /Use \/llama to select a model to load, or \/llama <model> to load one directly\./)
 })
 
 test('formatLlamaModelContext: prefers n_ctx over n_ctx_train', () => {
@@ -250,7 +250,7 @@ test('llamaStartupSection: lists models with a /llama hint', () => {
   assert.match(text, /## llama\.cpp models \(http:\/\/10\.18\.0\.1:8080\)/)
   assert.match(text, /- Fast · unloaded · 268435k context/)
   assert.match(text, /- Slow · unloaded/)
-  assert.match(text, /- Load a model with: \/llama <model>/)
+  assert.match(text, /- Use \/llama to select a model to load/)
 })
 
 test('formatBytes: human readable sizes', () => {

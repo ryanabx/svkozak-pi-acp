@@ -392,10 +392,12 @@ export class PiAcpAgent implements ACPAgent {
     // it will still be emitted as the first chunk of the first prompt.
     if (preludeText) setTimeout(() => session.sendStartupInfoIfPending(), 0)
 
-    // Advertise slash commands (ACP: available_commands_update)
+    // Advertise slash commands (ACP: available_commands_update) and the initial context
+    // reading (ACP: usage_update).
     // Important: some clients (e.g. Zed) will ignore notifications for an unknown sessionId.
     // So we must send this *after* the session/new response has been delivered.
     setTimeout(() => {
+      void session.publishUsage()
       void (async () => {
         try {
           const pi = (await session.proc.getCommands()) as any
@@ -1073,8 +1075,10 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    // Advertise slash commands after the response so the client knows the session exists.
+    // Advertise slash commands and the restored context reading after the response, so the
+    // client knows the session exists.
     setTimeout(() => {
+      void session.publishUsage()
       void (async () => {
         try {
           const pi = (await proc.getCommands()) as any
@@ -1138,6 +1142,7 @@ export class PiAcpAgent implements ACPAgent {
     const session = await this.restoreSession(params.sessionId)
     await setSessionModel(session.proc, params.modelId)
     await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    void session.publishUsage()
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
@@ -1193,6 +1198,7 @@ export class PiAcpAgent implements ACPAgent {
     }
 
     const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
+    if (configId === MODEL_CONFIG_ID) void session.publishUsage()
     return { configOptions }
   }
 }

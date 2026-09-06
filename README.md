@@ -18,6 +18,10 @@ Expect some minor breaking changes.
   - Relative file paths from pi are resolved against the session cwd before being emitted as ACP tool locations, which enables follow-along features in clients like Zed
   - For `edit`, `pi-acp` attempts to infer a 1-based line number from a unique `oldText` match in the pre-edit file snapshot and includes it in the emitted tool location when possible
   - For `edit`, `pi-acp` snapshots the file before the tool runs and emits an ACP **structured diff** (`oldText`/`newText`) on completion when possible
+- Reports pi's context-window usage as ACP `usage_update`
+  - `used`/`size` come from pi's own `contextUsage` reading (the number pi shows in its footer), refreshed after each turn, after compaction, on session create/load, and on model change
+  - Cumulative session cost is reported alongside it in USD
+  - Requires a pi version that reports `contextUsage` in `get_session_stats`; older versions simply report no usage
 - Session persistence
   - pi stores its own sessions in `~/.pi/agent/sessions/...`
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file

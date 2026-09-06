@@ -27,6 +27,7 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { toUsageUpdate } from './translate/usage.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -296,6 +297,9 @@ export class PiAcpSession {
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  // Serialized last published usage reading, so unchanged values aren't re-sent.
+  private lastUsage = ''
+
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -396,6 +400,34 @@ export class PiAcpSession {
 
   wasCancelRequested(): boolean {
     return this.cancelRequested
+  }
+
+  /**
+   * Publish pi's context-window occupancy as an ACP `usage_update`.
+   *
+   * Pi recomputes occupancy on demand instead of announcing it, so this is called
+   * wherever the active context or the model's window can change. `compactedTokens`
+   * carries a compaction's own post-compaction estimate, which is the only reading
+   * pi has until the next assistant reply.
+   *
+   * Resolves once every pending update has been delivered, so a turn can wait on it
+   * before reporting its stop reason.
+   */
+  async publishUsage(compactedTokens?: number): Promise<void> {
+    let update: ReturnType<typeof toUsageUpdate> = null
+    try {
+      update = toUsageUpdate(await this.proc.getSessionStats(), compactedTokens)
+    } catch {
+      // Best-effort: pi builds without `contextUsage`, and unhealthy subprocesses, report nothing.
+    }
+
+    const serialized = update ? JSON.stringify(update) : ''
+    if (update && serialized !== this.lastUsage) {
+      this.lastUsage = serialized
+      this.emit({ sessionUpdate: 'usage_update', ...update })
+    }
+
+    await this.flushEmits()
   }
 
   private emit(update: SessionUpdate): void {
@@ -836,10 +868,18 @@ export class PiAcpSession {
         break
       }
 
+      case 'compaction_end': {
+        // Compaction rewrites the context; pi withholds an occupancy reading until the
+        // next assistant reply, so fall back to the compaction's own estimate.
+        const estimate = (ev as any).result?.estimatedTokensAfter
+        void this.publishUsage(typeof estimate === 'number' ? estimate : undefined)
+        break
+      }
+
       case 'agent_settled': {
-        // Ensure all updates derived from pi events are delivered before we resolve
-        // the ACP `session/prompt` request.
-        void this.flushEmits().finally(() => {
+        // Publish the turn's final context reading and ensure all updates derived from
+        // pi events are delivered, before we resolve the ACP `session/prompt` request.
+        void this.publishUsage().finally(() => {
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null

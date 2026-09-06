@@ -105,6 +105,7 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits conf
   const session = {
     sessionId: 's1',
     cwd: process.cwd(),
+    async publishUsage() {},
     proc: {
       async getAvailableModels() {
         return {

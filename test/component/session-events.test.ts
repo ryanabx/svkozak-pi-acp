@@ -444,6 +444,89 @@ test('PiAcpSession: emits agent_message_chunk for compaction_end', async () => {
   })
 })
 
+test('PiAcpSession: reports a failed automatic compaction instead of claiming success', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({
+    type: 'compaction_end',
+    reason: 'overflow',
+    result: undefined,
+    aborted: false,
+    willRetry: false,
+    errorMessage: 'Compaction failed: model unavailable'
+  } as any)
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(conn.updates[0]!.update, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Compaction failed: model unavailable' }
+  })
+})
+
+test('PiAcpSession: reports a cancelled automatic compaction', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'compaction_end', reason: 'threshold', result: undefined, aborted: true, willRetry: false } as any)
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(conn.updates[0]!.update, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Automatic compaction was cancelled.' }
+  })
+})
+
+test('PiAcpSession: stays quiet for manual compaction, which /compact reports itself', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'compaction_start', reason: 'manual' } as any)
+  proc.emit({
+    type: 'compaction_end',
+    reason: 'manual',
+    result: { summary: 's', tokensBefore: 100, estimatedTokensAfter: 10 },
+    aborted: false,
+    willRetry: false
+  } as any)
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.deepEqual(
+    conn.updates.filter(u => u.update.sessionUpdate === 'agent_message_chunk'),
+    []
+  )
+})
+
 test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with text_delta events', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

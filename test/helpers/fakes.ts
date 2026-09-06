@@ -29,6 +29,11 @@ export class FakePiRpcProcess {
   readonly prompts: Array<{ message: string; attachments: unknown[] }> = []
   readonly extensionUiResponses: unknown[] = []
   abortCount = 0
+  getSessionStatsCount = 0
+
+  // Return value for getSessionStats(). When null the call rejects, mirroring a pi
+  // build that doesn't answer the command.
+  sessionStats: unknown = null
 
   onEvent(handler: (ev: PiRpcEvent) => void): () => void {
     this.handlers.push(handler)
@@ -63,6 +68,12 @@ export class FakePiRpcProcess {
 
   async getMessages(): Promise<any> {
     return { messages: [] }
+  }
+
+  async getSessionStats(): Promise<unknown> {
+    this.getSessionStatsCount += 1
+    if (this.sessionStats === null) throw new Error('pi get_session_stats failed')
+    return this.sessionStats
   }
 }
 

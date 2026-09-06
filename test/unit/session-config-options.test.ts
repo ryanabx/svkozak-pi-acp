@@ -101,11 +101,14 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits conf
     model: { provider: 'test', id: 'alpha' }
   }
   const setModelCalls: Array<{ provider: string; modelId: string }> = []
+  let usagePublishes = 0
 
   const session = {
     sessionId: 's1',
     cwd: process.cwd(),
-    async publishUsage() {},
+    async publishUsage() {
+      usagePublishes += 1
+    },
     proc: {
       async getAvailableModels() {
         return {
@@ -135,6 +138,8 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits conf
   } as any)
 
   assert.deepEqual(setModelCalls, [{ provider: 'test', modelId: 'beta' }])
+  // The window belongs to the model, so a model change re-reads context usage.
+  assert.equal(usagePublishes, 1)
   assert.equal(result.configOptions.find(option => option.id === 'model')?.currentValue, 'test/beta')
   assert.deepEqual(conn.updates, [
     {

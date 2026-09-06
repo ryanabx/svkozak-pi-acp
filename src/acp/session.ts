@@ -796,7 +796,11 @@ export class PiAcpSession {
         break
       }
 
-      case 'auto_compaction_start': {
+      case 'compaction_start': {
+        // Manual compaction runs through the `/compact` command, which reports its own
+        // result; only automatic compaction is otherwise unannounced.
+        if ((ev as any).reason === 'manual') break
+
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
@@ -807,12 +811,23 @@ export class PiAcpSession {
         break
       }
 
-      case 'auto_compaction_end': {
+      case 'compaction_end': {
+        // Compaction rewrites the context; pi withholds an occupancy reading until the
+        // next assistant reply, so fall back to the compaction's own estimate.
+        const { reason, result, aborted, errorMessage } = ev as any
+        void this.publishUsage(
+          typeof result?.estimatedTokensAfter === 'number' ? result.estimatedTokensAfter : undefined
+        )
+
+        if (reason === 'manual') break
+
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
             type: 'text',
-            text: 'Automatic compaction finished; context was summarized to continue the session.'
+            text: aborted
+              ? 'Automatic compaction was cancelled.'
+              : (errorMessage ?? 'Automatic compaction finished; context was summarized to continue the session.')
           } satisfies ContentBlock
         })
         break

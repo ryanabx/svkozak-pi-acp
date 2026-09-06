@@ -393,7 +393,7 @@ test('PiAcpSession: emits agent_message_chunk for auto_retry_end', async () => {
   })
 })
 
-test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async () => {
+test('PiAcpSession: emits agent_message_chunk for compaction_start', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -406,7 +406,7 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async 
     fileCommands: []
   })
 
-  proc.emit({ type: 'auto_compaction_start' } as any)
+  proc.emit({ type: 'compaction_start', reason: 'threshold' } as any)
 
   await new Promise(r => setTimeout(r, 0))
 
@@ -417,7 +417,7 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async 
   })
 })
 
-test('PiAcpSession: emits agent_message_chunk for auto_compaction_end', async () => {
+test('PiAcpSession: emits agent_message_chunk for compaction_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -430,7 +430,7 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_end', async ()
     fileCommands: []
   })
 
-  proc.emit({ type: 'auto_compaction_end' } as any)
+  proc.emit({ type: 'compaction_end', reason: 'threshold', result: undefined, aborted: false, willRetry: false } as any)
 
   await new Promise(r => setTimeout(r, 0))
 
